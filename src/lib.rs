@@ -428,15 +428,13 @@ fn parse_date<'a>(header: &Header, input: &'a [u8]) -> IResult<&'a [u8], DateTim
         .ok_or(Error::InvalidDate)?
         .and_hms_opt(0, 0, 0)
         .ok_or(Error::InvalidDate)?
+        .and_utc()
         .timestamp_nanos_opt()
         .ok_or(Error::InvalidDate)?;
     let timestamp_seconds_to_1970 = (timestamp_nanos_to_2001 + nanos_2001) / 1_000_000_000;
     Ok((
         input,
-        Utc.from_utc_datetime(
-            &NaiveDateTime::from_timestamp_opt(timestamp_seconds_to_1970, 0)
-                .ok_or(Error::InvalidDate)?,
-        ),
+        DateTime::from_timestamp(timestamp_seconds_to_1970, 0).ok_or(Error::InvalidDate)?,
     ))
 }
 
