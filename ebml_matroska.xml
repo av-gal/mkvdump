@@ -1,4 +1,4 @@
-<!-- https://github.com/ietf-wg-cellar/ebml-specification/raw/master/ebml.xml -->
+<!-- https://github.com/ietf-wg-cellar/matroska-specification/raw/master/ebml_matroska.xml -->
 <EBMLSchema xmlns="urn:ietf:rfc:8794" docType="matroska" version="4">
   <!-- constraints on EBML Header Elements -->
   <element name="EBMLMaxIDLength" path="\EBML\EBMLMaxIDLength" id="0x42F2" type="uinteger" range="4" default="4" minOccurs="1" maxOccurs="1" />
