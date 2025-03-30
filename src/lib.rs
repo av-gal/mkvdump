@@ -41,7 +41,7 @@ pub(crate) fn parse_id(input: &[u8]) -> IResult<&[u8], Id> {
     let (input, first_byte) = peek(take(1usize))(input)?;
     let first_byte = first_byte[0];
 
-    let num_bytes = count_leading_zero_bits(first_byte) + 1;
+    let num_bytes = first_byte.leading_zeros() + 1;
 
     // IDs can only have up to 4 bytes in Matroska
     if num_bytes > 4 {
@@ -109,21 +109,11 @@ impl Header {
     }
 }
 
-fn count_leading_zero_bits(input: u8) -> u8 {
-    const MASK: u8 = 0b10000000;
-    for leading_zeros in 0..8 {
-        if input >= (MASK >> leading_zeros) {
-            return leading_zeros;
-        }
-    }
-    8
-}
-
 fn parse_varint(first_input: &[u8]) -> IResult<&[u8], Option<usize>> {
     let (input, first_byte) = peek(take(1usize))(first_input)?;
     let first_byte = first_byte[0];
 
-    let vint_prefix_size = count_leading_zero_bits(first_byte) + 1;
+    let vint_prefix_size = first_byte.leading_zeros() + 1;
 
     // Maximum 8 bytes, i.e. first byte can't be 0
     if vint_prefix_size > 8 {
@@ -596,14 +586,6 @@ mod tests {
 
     const EMPTY: &[u8] = &[];
     const UNKNOWN_VARINT: &[u8] = &[0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
-
-    #[test]
-    fn test_count_leading_zero_bits() {
-        assert_eq!(count_leading_zero_bits(0b10000000), 0);
-        assert_eq!(count_leading_zero_bits(0b01000000), 1);
-        assert_eq!(count_leading_zero_bits(0b00000001), 7);
-        assert_eq!(count_leading_zero_bits(0b00000000), 8);
-    }
 
     #[test]
     fn test_parse_id() {
