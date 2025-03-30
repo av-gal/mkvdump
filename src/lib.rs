@@ -7,7 +7,6 @@
 
 use std::ops::Not;
 
-use chrono::prelude::*;
 use serde::{Serialize, Serializer};
 use serde_with::skip_serializing_none;
 
@@ -270,6 +269,21 @@ impl Unsigned {
     }
 }
 
+/// A date-and-timestamp stored as an i64, representing the number of nanoseconds from 2001-01-01T00:00:00 UTC
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize)]
+pub struct EbmlDate(i64);
+
+#[cfg(feature = "chrono")]
+impl From<EbmlDate> for chrono::DateTime<chrono::Utc> {
+    fn from(value: EbmlDate) -> Self {
+        use chrono::prelude::*;
+
+        let nanos_2001 = Utc.with_ymd_and_hms(2001, 1, 1, 0, 0, 0).unwrap();
+
+        nanos_2001 + chrono::TimeDelta::nanoseconds(value.0)
+    }
+}
+
 /// An [EBML Body](https://github.com/ietf-wg-cellar/ebml-specification/blob/master/specification.markdown#ebml-body)
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
@@ -288,7 +302,7 @@ pub enum Body {
     /// An UTF-8 String
     Utf8(String),
     /// A Date
-    Date(DateTime<Utc>),
+    Date(EbmlDate),
     /// A Binary
     Binary(Binary),
 }
@@ -418,20 +432,9 @@ fn parse_string<'a>(header: &Header, input: &'a [u8]) -> IResult<&'a [u8], Strin
     Ok((input, value))
 }
 
-fn parse_date<'a>(header: &Header, input: &'a [u8]) -> IResult<&'a [u8], DateTime<Utc>> {
+fn parse_date<'a>(header: &Header, input: &'a [u8]) -> IResult<&'a [u8], EbmlDate> {
     let (input, timestamp_nanos_to_2001) = parse_int::<i64>(header, input)?;
-    let nanos_2001 = NaiveDate::from_ymd_opt(2001, 1, 1)
-        .ok_or(Error::InvalidDate)?
-        .and_hms_opt(0, 0, 0)
-        .ok_or(Error::InvalidDate)?
-        .and_utc()
-        .timestamp_nanos_opt()
-        .ok_or(Error::InvalidDate)?;
-    let timestamp_seconds_to_1970 = (timestamp_nanos_to_2001 + nanos_2001) / 1_000_000_000;
-    Ok((
-        input,
-        DateTime::from_timestamp(timestamp_seconds_to_1970, 0).ok_or(Error::InvalidDate)?,
-    ))
+    Ok((input, EbmlDate(timestamp_nanos_to_2001)))
 }
 
 trait Integer64FromBigEndianBytes {
@@ -751,12 +754,8 @@ mod tests {
 
     #[test]
     fn test_parse_date() {
-        let expected_datetime = Utc.from_utc_datetime(
-            &NaiveDate::from_ymd_opt(2022, 8, 11)
-                .unwrap()
-                .and_hms_opt(8, 27, 15)
-                .unwrap(),
-        );
+        let expected_datetime = EbmlDate(681899235000000000);
+
         assert_eq!(
             parse_date(
                 &Header::new(Id::DateUtc, 1, 8),
@@ -764,6 +763,21 @@ mod tests {
             ),
             Ok((EMPTY, expected_datetime))
         )
+    }
+
+    #[cfg(feature = "chrono")]
+    #[test]
+    fn test_date_chrono() {
+        use chrono::prelude::*;
+        
+        let expected_datetime = Utc.from_utc_datetime(
+            &NaiveDate::from_ymd_opt(2022, 8, 11)
+                .unwrap()
+                .and_hms_opt(8, 27, 15)
+                .unwrap(),
+        );
+
+        assert_eq!(EbmlDate(681899235000000000).into(), expected_datetime,)
     }
 
     #[test]
