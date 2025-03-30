@@ -24,6 +24,8 @@ struct Element {
     variant: String,
     #[serde(rename(deserialize = "$value"))]
     details: Option<Vec<ElementDetail>>,
+    #[serde(default)]
+    unknownsizeallowed: bool,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -138,6 +140,7 @@ fn create_elements_file(elements: &[Element]) -> std::io::Result<()> {
         variant,
         path: _,
         details,
+        unknownsizeallowed
     } in elements
     {
         if let Some(details) = details {
@@ -160,7 +163,7 @@ fn create_elements_file(elements: &[Element]) -> std::io::Result<()> {
         let enum_name = name.to_case(Case::Pascal);
         writeln!(
             file,
-            "    name = {enum_name}, original_name = \"{name}\", id = {id}, variant = {variant};"
+            "    name = {enum_name}, original_name = \"{name}\", id = {id}, variant = {variant}, unknownsizeallowed = {unknownsizeallowed};"
         )?;
     }
     writeln!(file, "}}")?;

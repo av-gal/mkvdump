@@ -1,5 +1,5 @@
 macro_rules! ebml_elements {
-    ($($(#[doc = $doc:literal])* name = $element_name:ident, original_name = $original_name:expr, id = $id:expr, variant = $variant:ident;)+) => {
+    ($($(#[doc = $doc:literal])* name = $element_name:ident, original_name = $original_name:expr, id = $id:expr, variant = $variant:ident, unknownsizeallowed = $unknownsizeallowed:literal;)+) => {
         use serde::{Serialize, Serializer};
 
         /// Matroska Element Type.
@@ -64,6 +64,15 @@ macro_rules! ebml_elements {
                 match self {
                     $(Id::$element_name => Some($id),)+
                     Id::Unknown(value) => Some(*value),
+                    Id::Corrupted => None
+                }
+            }
+
+            /// Whether this element is allowed to have an unknown size
+            pub fn unknown_size_allowed(&self) -> Option<bool> {
+                match self {
+                    $(Id::$element_name => Some($unknownsizeallowed),)+
+                    Id::Unknown(_) => None,
                     Id::Corrupted => None
                 }
             }
