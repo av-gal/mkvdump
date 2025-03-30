@@ -284,6 +284,24 @@ impl From<EbmlDate> for chrono::DateTime<chrono::Utc> {
     }
 }
 
+#[cfg(feature = "time")]
+impl From<EbmlDate> for time::UtcDateTime {
+    fn from(value: EbmlDate) -> Self {
+        use time::{Duration, Date, Time, Month, UtcDateTime};
+
+        UtcDateTime::new(Date::from_calendar_date(2001, Month::January, 1).unwrap(), Time::from_hms(0,0,0).unwrap()) + Duration::nanoseconds(value.0)
+    }
+}
+
+#[cfg(feature = "jiff")]
+impl From<EbmlDate> for jiff::Zoned {
+    fn from(value: EbmlDate) -> Self {
+        use jiff::{civil::date, tz::TimeZone, ToSpan};
+
+        &date(2001, 1, 1).at(0, 0, 0, 0).to_zoned(TimeZone::UTC).unwrap() + (value.0).nanoseconds()
+    }
+}
+
 /// An [EBML Body](https://github.com/ietf-wg-cellar/ebml-specification/blob/master/specification.markdown#ebml-body)
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
@@ -769,7 +787,6 @@ mod tests {
     #[test]
     fn test_date_chrono() {
         use chrono::prelude::*;
-        
         let expected_datetime = Utc.from_utc_datetime(
             &NaiveDate::from_ymd_opt(2022, 8, 11)
                 .unwrap()
@@ -777,7 +794,25 @@ mod tests {
                 .unwrap(),
         );
 
-        assert_eq!(EbmlDate(681899235000000000).into(), expected_datetime,)
+        assert_eq!(DateTime::<Utc>::from(EbmlDate(681899235000000000)), expected_datetime)
+    }
+
+    #[cfg(feature = "time")]
+    #[test]
+    fn test_date_time() {
+        use time::{Date, Time, Month, UtcDateTime};
+        let expected_datetime = UtcDateTime::new(Date::from_calendar_date(2022, Month::August, 11).unwrap(), Time::from_hms(8,27,15).unwrap());
+
+        assert_eq!(UtcDateTime::from(EbmlDate(681899235000000000)), expected_datetime)
+    }
+
+    #[cfg(feature = "jiff")]
+    #[test]
+    fn test_date_jiff() {
+        use jiff::{civil::date, tz::TimeZone, Zoned};
+        let expected_datetime = date(2022, 8, 11).at(8, 27, 15, 0).to_zoned(TimeZone::UTC).unwrap();
+
+        assert_eq!(Zoned::from(EbmlDate(681899235000000000)), expected_datetime)
     }
 
     #[test]
