@@ -8,8 +8,6 @@
 use std::ops::Not;
 
 use chrono::prelude::*;
-use nom::combinator::peek;
-use nom::ToUsize;
 use serde::{Serialize, Serializer};
 use serde_with::skip_serializing_none;
 
@@ -31,24 +29,21 @@ pub use error::Error;
 pub type Result<T> = std::result::Result<T, Error>;
 type IResult<T, O> = Result<(T, O)>;
 
-fn take<'a>(
-    len: impl ToUsize,
-) -> impl Fn(&'a [u8]) -> std::result::Result<(&'a [u8], &'a [u8]), nom::Err<()>> {
-    nom::bytes::streaming::take(len)
-}
-
 pub(crate) fn parse_id(input: &[u8]) -> IResult<&[u8], Id> {
-    let (input, first_byte) = peek(take(1usize))(input)?;
-    let first_byte = first_byte[0];
-
-    let num_bytes = first_byte.leading_zeros() + 1;
+    let (first_byte, _) = input.split_first().ok_or(Error::NeedData)?;
+    // SAFETY: A byte will never have more than eight leading zeroes, which will always fit into usize
+    let num_bytes: usize = unsafe {
+        (first_byte.leading_zeros() + 1)
+            .try_into()
+            .unwrap_unchecked()
+    };
 
     // IDs can only have up to 4 bytes in Matroska
     if num_bytes > 4 {
         return Err(Error::InvalidId);
     }
 
-    let (input, varint_bytes) = take(num_bytes)(input)?;
+    let (varint_bytes, input) = input.split_at_checked(num_bytes).ok_or(Error::NeedData)?;
     let mut value_buffer = [0u8; 4];
     value_buffer[(4 - varint_bytes.len())..].copy_from_slice(varint_bytes);
     let id = u32::from_be_bytes(value_buffer);
@@ -110,17 +105,18 @@ impl Header {
 }
 
 fn parse_varint(first_input: &[u8]) -> IResult<&[u8], Option<usize>> {
-    let (input, first_byte) = peek(take(1usize))(first_input)?;
-    let first_byte = first_byte[0];
+    let (first_byte, _) = first_input.split_first().ok_or(Error::NeedData)?;
 
-    let vint_prefix_size = first_byte.leading_zeros() + 1;
+    let vint_prefix_size = first_byte.leading_zeros() as usize + 1;
 
     // Maximum 8 bytes, i.e. first byte can't be 0
     if vint_prefix_size > 8 {
         return Err(Error::InvalidVarint);
     }
 
-    let (input, varint_bytes) = take(vint_prefix_size)(input)?;
+    let (varint_bytes, input) = first_input
+        .split_at_checked(vint_prefix_size)
+        .ok_or(Error::NeedData)?;
     // any efficient way to avoid this copy here?
     let mut value_buffer = [0u8; 8];
     value_buffer[(8 - varint_bytes.len())..].copy_from_slice(varint_bytes);
@@ -220,7 +216,7 @@ fn parse_binary<'a>(header: &Header, input: &'a [u8]) -> IResult<&'a [u8], Binar
     let body_size = header.body_size.ok_or(Error::ForbiddenUnknownSize)?;
     let (input, binary) = peek_binary(header, input)?;
     // Actually consume the bytes from the body
-    let (input, _) = take(body_size)(input)?;
+    let (_, input) = input.split_at_checked(body_size).ok_or(Error::NeedData)?;
     Ok((input, binary))
 }
 
@@ -245,7 +241,7 @@ pub fn peek_binary<'a>(header: &Header, input: &'a [u8]) -> IResult<&'a [u8], Bi
 fn peek_standard_binary(input: &[u8], size: usize) -> IResult<&[u8], String> {
     const MAX_LENGTH: usize = 64;
     if size <= MAX_LENGTH {
-        let (input, bytes) = peek(take(size))(input)?;
+        let (bytes, _) = input.split_at_checked(size).ok_or(Error::NeedData)?;
         let string_values = bytes
             .iter()
             .map(|n| format!("{:02x}", n))
@@ -413,7 +409,7 @@ pub fn parse_body<'a>(header: &Header, input: &'a [u8]) -> IResult<&'a [u8], Bod
 
 fn parse_string<'a>(header: &Header, input: &'a [u8]) -> IResult<&'a [u8], String> {
     let body_size = header.body_size.ok_or(Error::ForbiddenUnknownSize)?;
-    let (input, string_bytes) = take(body_size)(input)?;
+    let (string_bytes, input) = input.split_at_checked(body_size).ok_or(Error::NeedData)?;
     let value = String::from_utf8(string_bytes.to_vec())?;
 
     // Remove trimming null characters
@@ -463,7 +459,7 @@ fn parse_int<'a, T: Integer64FromBigEndianBytes>(
         return Err(Error::ForbiddenIntegerSize);
     }
 
-    let (input, int_bytes) = take(body_size)(input)?;
+    let (int_bytes, input) = input.split_at_checked(body_size).ok_or(Error::NeedData)?;
 
     let mut value_buffer = [0u8; 8];
     value_buffer[(8 - int_bytes.len())..].copy_from_slice(int_bytes);
@@ -476,11 +472,11 @@ fn parse_float<'a>(header: &Header, input: &'a [u8]) -> IResult<&'a [u8], f64> {
     let body_size = header.body_size.ok_or(Error::ForbiddenUnknownSize)?;
 
     if body_size == 4 {
-        let (input, float_bytes) = take(body_size)(input)?;
+        let (float_bytes, input) = input.split_at_checked(body_size).ok_or(Error::NeedData)?;
         let value = f32::from_be_bytes(float_bytes.try_into().unwrap()) as f64;
         Ok((input, value))
     } else if body_size == 8 {
-        let (input, float_bytes) = take(body_size)(input)?;
+        let (float_bytes, input) = input.split_at_checked(body_size).ok_or(Error::NeedData)?;
         let value = f64::from_be_bytes(float_bytes.try_into().unwrap());
         Ok((input, value))
     } else if body_size == 0 {
@@ -491,7 +487,7 @@ fn parse_float<'a>(header: &Header, input: &'a [u8]) -> IResult<&'a [u8], f64> {
 }
 
 fn parse_i16(input: &[u8]) -> IResult<&[u8], i16> {
-    let (input, bytes) = take(2usize)(input)?;
+    let (bytes, input) = input.split_at_checked(2).ok_or(Error::NeedData)?;
     let value = i16::from_be_bytes(bytes.try_into().unwrap());
     Ok((input, value))
 }
@@ -513,17 +509,15 @@ fn parse_block(input: &[u8]) -> IResult<&[u8], Block> {
     let (input, track_number) = parse_varint(input)?;
     let track_number = track_number.ok_or(Error::MissingTrackNumber)?;
     let (input, timestamp) = parse_i16(input)?;
-    let (input, flags) = take(1usize)(input)?;
-    let flags = flags[0];
+    let (&flags, input) = input.split_first().ok_or(Error::NeedData)?;
 
     let invisible = is_invisible(flags);
     let lacing = get_lacing(flags);
-    let (input, num_frames) = if lacing.is_some() {
-        let (input, next_byte) = take(1usize)(input)?;
-        let num_frames = next_byte[0];
-        (input, Some(num_frames + 1))
+    let (num_frames, input) = if lacing.is_some() {
+        let (num_frames, input) = input.split_first().ok_or(Error::NeedData)?;
+        (Some(num_frames + 1), input)
     } else {
-        (input, None)
+        (None, input)
     };
 
     Ok((
@@ -542,16 +536,14 @@ fn parse_simple_block(input: &[u8]) -> IResult<&[u8], SimpleBlock> {
     let (input, track_number) = parse_varint(input)?;
     let track_number = track_number.ok_or(Error::MissingTrackNumber)?;
     let (input, timestamp) = parse_i16(input)?;
-    let (input, flags) = take(1usize)(input)?;
-    let flags = flags[0];
+    let (&flags, input) = input.split_first().ok_or(Error::NeedData)?;
 
     let keyframe = (flags & (1 << 7)) != 0;
     let invisible = is_invisible(flags);
     let lacing = get_lacing(flags);
     let discardable = (flags & 0b1) != 0;
     let (input, num_frames) = if lacing.is_some() {
-        let (input, next_byte) = take(1usize)(input)?;
-        let num_frames = next_byte[0];
+        let (num_frames, input) = input.split_first().ok_or(Error::NeedData)?;
         (input, Some(num_frames + 1))
     } else {
         (input, None)
