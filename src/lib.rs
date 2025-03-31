@@ -38,6 +38,7 @@ pub(crate) fn parse_id(input: &[u8]) -> IResult<&[u8], Id> {
     };
 
     // IDs can only have up to 4 bytes in Matroska
+    // TODO: Use EBMLMaxIDLength instead of hardcoding 4 bytes
     if num_bytes > 4 {
         return Err(Error::InvalidId);
     }
@@ -109,6 +110,7 @@ fn parse_varint(first_input: &[u8]) -> IResult<&[u8], Option<usize>> {
     let vint_prefix_size = first_byte.leading_zeros() as usize + 1;
 
     // Maximum 8 bytes, i.e. first byte can't be 0
+    // TODO: Use EBMLMaxSizeLength instead of hardcoding 8 bytes 
     if vint_prefix_size > 8 {
         return Err(Error::InvalidVarint);
     }
@@ -118,7 +120,7 @@ fn parse_varint(first_input: &[u8]) -> IResult<&[u8], Option<usize>> {
         .ok_or(Error::NeedData)?;
     // any efficient way to avoid this copy here?
     let mut value_buffer = [0u8; 8];
-    value_buffer[(8 - varint_bytes.len())..].copy_from_slice(varint_bytes);
+    value_buffer[(8 - vint_prefix_size)..].copy_from_slice(varint_bytes);
     let mut value = u64::from_be_bytes(value_buffer);
 
     // discard varint prefix (zeros + market bit)
