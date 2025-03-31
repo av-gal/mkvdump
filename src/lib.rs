@@ -61,21 +61,21 @@ pub struct Header {
     pub header_size: usize,
     /// Size of the Element Body
     #[serde(skip_serializing)]
-    pub body_size: Option<usize>,
+    pub body_size: Option<u64>,
     /// Size of Header + Body
     #[serialize_always]
     #[serde(serialize_with = "serialize_size")]
-    pub size: Option<usize>,
+    pub size: Option<u64>,
     /// Position in the input
     pub position: Option<usize>,
 }
 
 fn serialize_size<S: Serializer>(
-    size: &Option<usize>,
+    size: &Option<u64>,
     s: S,
 ) -> std::result::Result<S::Ok, S::Error> {
     if let Some(size) = size {
-        s.serialize_u64(*size as u64)
+        s.serialize_u64(*size)
     } else {
         s.serialize_str("Unknown")
     }
@@ -83,12 +83,12 @@ fn serialize_size<S: Serializer>(
 
 impl Header {
     /// Create a new Header
-    pub fn new(id: Id, header_size: usize, body_size: usize) -> Self {
+    pub fn new(id: Id, header_size: usize, body_size: u64) -> Self {
         Self {
             id,
             header_size,
             body_size: Some(body_size),
-            size: Some(header_size + body_size),
+            size: Some(header_size as u64 + body_size),
             position: None,
         }
     }
@@ -104,7 +104,7 @@ impl Header {
     }
 }
 
-fn parse_varint(first_input: &[u8]) -> IResult<&[u8], Option<usize>> {
+fn parse_varint(first_input: &[u8]) -> IResult<&[u8], Option<u64>> {
     let (first_byte, _) = first_input.split_first().ok_or(Error::NeedData)?;
 
     let vint_prefix_size = first_byte.leading_zeros() as usize + 1;
@@ -133,9 +133,13 @@ fn parse_varint(first_input: &[u8]) -> IResult<&[u8], Option<usize>> {
     //
     // In 32-bit plaforms, the conversion from u64 to usize will fail if the value
     // is bigger than u32::MAX.
-    let result = (value != bitmask).then(|| value.try_into()).transpose()?;
+    // let result = (value != bitmask).then(|| value.try_into()).transpose()?;
 
-    Ok((input, result))
+    Ok((input, if value == bitmask {
+        None
+    } else {
+        Some(value)
+    }))
 }
 
 /// Parse element header
@@ -171,7 +175,7 @@ enum Lacing {
 #[skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Block {
-    track_number: usize,
+    track_number: u64,
     timestamp: i16,
     #[serde(skip_serializing_if = "Not::not")]
     invisible: bool,
@@ -183,7 +187,7 @@ pub struct Block {
 #[skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SimpleBlock {
-    track_number: usize,
+    track_number: u64,
     timestamp: i16,
     #[serde(skip_serializing_if = "Not::not")]
     keyframe: bool,
@@ -217,7 +221,7 @@ fn parse_binary<'a>(header: &Header, input: &'a [u8]) -> IResult<&'a [u8], Binar
     let body_size = header.body_size.ok_or(Error::ForbiddenUnknownSize)?;
     let (input, binary) = peek_binary(header, input)?;
     // Actually consume the bytes from the body
-    let (_, input) = input.split_at_checked(body_size).ok_or(Error::NeedData)?;
+    let (_, input) = input.split_at_checked(body_size.try_into().expect("value of u64 > usize!")).ok_or(Error::NeedData)?;
     Ok((input, binary))
 }
 
@@ -233,7 +237,7 @@ pub fn peek_binary<'a>(header: &Header, input: &'a [u8]) -> IResult<&'a [u8], Bi
         Id::SimpleBlock => Binary::SimpleBlock(parse_simple_block(input)?.1),
         Id::Block => Binary::Block(parse_block(input)?.1),
         Id::Void => Binary::Void,
-        _ => Binary::Standard(peek_standard_binary(input, body_size)?.1),
+        _ => Binary::Standard(peek_standard_binary(input, body_size.try_into().expect("value in u64 > usize::MAX on this system!"))?.1),
     };
 
     Ok((input, binary))
@@ -379,7 +383,7 @@ pub fn parse_corrupt(input: &[u8]) -> IResult<&[u8], Element> {
                 return Ok((
                     &input[offset..],
                     Element {
-                        header: Header::new(Id::corrupted(), 0, offset),
+                        header: Header::new(Id::corrupted(), 0, offset as u64),
                         body: Body::Binary(Binary::Corrupted),
                     },
                 ));
@@ -389,7 +393,7 @@ pub fn parse_corrupt(input: &[u8]) -> IResult<&[u8], Element> {
     Ok((
         &[],
         Element {
-            header: Header::new(Id::corrupted(), 0, input.len()),
+            header: Header::new(Id::corrupted(), 0, input.len() as u64),
             body: Body::Binary(Binary::Corrupted),
         },
     ))
@@ -443,7 +447,7 @@ pub fn parse_body<'a>(header: &Header, input: &'a [u8]) -> IResult<&'a [u8], Bod
 
 fn parse_string<'a>(header: &Header, input: &'a [u8]) -> IResult<&'a [u8], String> {
     let body_size = header.body_size.ok_or(Error::ForbiddenUnknownSize)?;
-    let (string_bytes, input) = input.split_at_checked(body_size).ok_or(Error::NeedData)?;
+    let (string_bytes, input) = input.split_at_checked(body_size.try_into().expect("value of u64 > usize::MAX on this system!")).ok_or(Error::NeedData)?;
     let value = String::from_utf8(string_bytes.to_vec())?;
 
     // Remove trimming null characters
@@ -482,7 +486,7 @@ fn parse_int<'a, T: Integer64FromBigEndianBytes>(
         return Err(Error::ForbiddenIntegerSize);
     }
 
-    let (int_bytes, input) = input.split_at_checked(body_size).ok_or(Error::NeedData)?;
+    let (int_bytes, input) = input.split_at_checked(body_size.try_into().expect("value of u64 > usize::MAX on this system")).ok_or(Error::NeedData)?;
 
     let mut value_buffer = [0u8; 8];
     value_buffer[(8 - int_bytes.len())..].copy_from_slice(int_bytes);
@@ -495,11 +499,11 @@ fn parse_float<'a>(header: &Header, input: &'a [u8]) -> IResult<&'a [u8], f64> {
     let body_size = header.body_size.ok_or(Error::ForbiddenUnknownSize)?;
 
     if body_size == 4 {
-        let (float_bytes, input) = input.split_at_checked(body_size).ok_or(Error::NeedData)?;
+        let (float_bytes, input) = input.split_at_checked(body_size.try_into().expect("value of u64 > usize::MAX on this system!")).ok_or(Error::NeedData)?;
         let value = f32::from_be_bytes(float_bytes.try_into().unwrap()) as f64;
         Ok((input, value))
     } else if body_size == 8 {
-        let (float_bytes, input) = input.split_at_checked(body_size).ok_or(Error::NeedData)?;
+        let (float_bytes, input) = input.split_at_checked(body_size.try_into().expect("value of u64 > usize::MAX on this system!")).ok_or(Error::NeedData)?;
         let value = f64::from_be_bytes(float_bytes.try_into().unwrap());
         Ok((input, value))
     } else if body_size == 0 {

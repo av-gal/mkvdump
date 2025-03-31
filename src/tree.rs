@@ -40,7 +40,7 @@ pub fn build_element_trees(elements: &[Element]) -> Vec<ElementTree> {
         match element.body {
             Body::Master => {
                 // parse_header() already handles Unknown sizes.
-                let mut size_remaining = element.header.body_size.unwrap_or(usize::MAX);
+                let mut size_remaining = element.header.body_size.unwrap_or(u64::MAX);
 
                 let mut children = Vec::<Element>::new();
                 while size_remaining > 0 {
@@ -56,7 +56,7 @@ pub fn build_element_trees(elements: &[Element]) -> Vec<ElementTree> {
                             // Master elements' body size should not count in the recursion
                             // as the children would duplicate the size count, so
                             // we only consider the header size on the calculation.
-                            next_child.header.header_size
+                            next_child.header.header_size as u64
                         } else {
                             next_child
                                 .header
