@@ -70,10 +70,7 @@ pub struct Header {
     pub position: Option<usize>,
 }
 
-fn serialize_size<S: Serializer>(
-    size: &Option<u64>,
-    s: S,
-) -> std::result::Result<S::Ok, S::Error> {
+fn serialize_size<S: Serializer>(size: &Option<u64>, s: S) -> std::result::Result<S::Ok, S::Error> {
     if let Some(size) = size {
         s.serialize_u64(*size)
     } else {
@@ -110,7 +107,7 @@ fn parse_varint(first_input: &[u8]) -> IResult<Option<u64>, &[u8]> {
     let vint_prefix_size = first_byte.leading_zeros() as usize + 1;
 
     // Maximum 8 bytes, i.e. first byte can't be 0
-    // TODO: Use EBMLMaxSizeLength instead of hardcoding 8 bytes 
+    // TODO: Use EBMLMaxSizeLength instead of hardcoding 8 bytes
     if vint_prefix_size > 8 {
         return Err(Error::InvalidVarint);
     }
@@ -217,7 +214,9 @@ fn parse_binary<'a>(header: &Header, input: &'a [u8]) -> IResult<Binary, &'a [u8
     let body_size = header.body_size.ok_or(Error::ForbiddenUnknownSize)?;
     let (binary, input) = peek_binary(header, input)?;
     // Actually consume the bytes from the body
-    let (_, input) = input.split_at_checked(body_size.try_into().expect("value of u64 > usize!")).ok_or(Error::NeedData)?;
+    let (_, input) = input
+        .split_at_checked(body_size.try_into().expect("value of u64 > usize!"))
+        .ok_or(Error::NeedData)?;
     Ok((binary, input))
 }
 
@@ -233,7 +232,12 @@ pub fn peek_binary<'a>(header: &Header, input: &'a [u8]) -> IResult<Binary, &'a 
         Id::SimpleBlock => Binary::SimpleBlock(parse_simple_block(input)?.0),
         Id::Block => Binary::Block(parse_block(input)?.0),
         Id::Void => Binary::Void,
-        _ => Binary::Standard(peek_standard_binary(input, body_size.try_into().expect("value in u64 > usize::MAX on this system!"))?),
+        _ => Binary::Standard(peek_standard_binary(
+            input,
+            body_size
+                .try_into()
+                .expect("value in u64 > usize::MAX on this system!"),
+        )?),
     };
 
     Ok((binary, input))
@@ -289,9 +293,12 @@ impl From<EbmlDate> for chrono::DateTime<chrono::Utc> {
 #[cfg(feature = "time")]
 impl From<EbmlDate> for time::UtcDateTime {
     fn from(value: EbmlDate) -> Self {
-        use time::{Duration, Date, Time, Month, UtcDateTime};
+        use time::{Date, Duration, Month, Time, UtcDateTime};
 
-        UtcDateTime::new(Date::from_calendar_date(2001, Month::January, 1).unwrap(), Time::from_hms(0,0,0).unwrap()) + Duration::nanoseconds(value.0)
+        UtcDateTime::new(
+            Date::from_calendar_date(2001, Month::January, 1).unwrap(),
+            Time::from_hms(0, 0, 0).unwrap(),
+        ) + Duration::nanoseconds(value.0)
     }
 }
 
@@ -300,7 +307,11 @@ impl From<EbmlDate> for jiff::Zoned {
     fn from(value: EbmlDate) -> Self {
         use jiff::{civil::date, tz::TimeZone, ToSpan};
 
-        &date(2001, 1, 1).at(0, 0, 0, 0).to_zoned(TimeZone::UTC).unwrap() + (value.0).nanoseconds()
+        &date(2001, 1, 1)
+            .at(0, 0, 0, 0)
+            .to_zoned(TimeZone::UTC)
+            .unwrap()
+            + (value.0).nanoseconds()
     }
 }
 
@@ -443,7 +454,13 @@ pub fn parse_body<'a>(header: &Header, input: &'a [u8]) -> IResult<Body, &'a [u8
 
 fn parse_string<'a>(header: &Header, input: &'a [u8]) -> IResult<String, &'a [u8]> {
     let body_size = header.body_size.ok_or(Error::ForbiddenUnknownSize)?;
-    let (string_bytes, input) = input.split_at_checked(body_size.try_into().expect("value of u64 > usize::MAX on this system!")).ok_or(Error::NeedData)?;
+    let (string_bytes, input) = input
+        .split_at_checked(
+            body_size
+                .try_into()
+                .expect("value of u64 > usize::MAX on this system!"),
+        )
+        .ok_or(Error::NeedData)?;
     let value = String::from_utf8(string_bytes.to_vec())?;
 
     // Remove trimming null characters
@@ -482,7 +499,13 @@ fn parse_int<'a, T: Integer64FromBigEndianBytes>(
         return Err(Error::ForbiddenIntegerSize);
     }
 
-    let (int_bytes, input) = input.split_at_checked(body_size.try_into().expect("value of u64 > usize::MAX on this system")).ok_or(Error::NeedData)?;
+    let (int_bytes, input) = input
+        .split_at_checked(
+            body_size
+                .try_into()
+                .expect("value of u64 > usize::MAX on this system"),
+        )
+        .ok_or(Error::NeedData)?;
 
     let mut value_buffer = [0u8; 8];
     value_buffer[(8 - int_bytes.len())..].copy_from_slice(int_bytes);
@@ -495,11 +518,23 @@ fn parse_float<'a>(header: &Header, input: &'a [u8]) -> IResult<f64, &'a [u8]> {
     let body_size = header.body_size.ok_or(Error::ForbiddenUnknownSize)?;
 
     if body_size == 4 {
-        let (float_bytes, input) = input.split_at_checked(body_size.try_into().expect("value of u64 > usize::MAX on this system!")).ok_or(Error::NeedData)?;
+        let (float_bytes, input) = input
+            .split_at_checked(
+                body_size
+                    .try_into()
+                    .expect("value of u64 > usize::MAX on this system!"),
+            )
+            .ok_or(Error::NeedData)?;
         let value = f32::from_be_bytes(float_bytes.try_into().unwrap()) as f64;
         Ok((value, input))
     } else if body_size == 8 {
-        let (float_bytes, input) = input.split_at_checked(body_size.try_into().expect("value of u64 > usize::MAX on this system!")).ok_or(Error::NeedData)?;
+        let (float_bytes, input) = input
+            .split_at_checked(
+                body_size
+                    .try_into()
+                    .expect("value of u64 > usize::MAX on this system!"),
+            )
+            .ok_or(Error::NeedData)?;
         let value = f64::from_be_bytes(float_bytes.try_into().unwrap());
         Ok((value, input))
     } else if body_size == 0 {
@@ -796,23 +831,35 @@ mod tests {
                 .unwrap(),
         );
 
-        assert_eq!(DateTime::<Utc>::from(EbmlDate(681899235000000000)), expected_datetime)
+        assert_eq!(
+            DateTime::<Utc>::from(EbmlDate(681899235000000000)),
+            expected_datetime
+        )
     }
 
     #[cfg(feature = "time")]
     #[test]
     fn test_date_time() {
-        use time::{Date, Time, Month, UtcDateTime};
-        let expected_datetime = UtcDateTime::new(Date::from_calendar_date(2022, Month::August, 11).unwrap(), Time::from_hms(8,27,15).unwrap());
+        use time::{Date, Month, Time, UtcDateTime};
+        let expected_datetime = UtcDateTime::new(
+            Date::from_calendar_date(2022, Month::August, 11).unwrap(),
+            Time::from_hms(8, 27, 15).unwrap(),
+        );
 
-        assert_eq!(UtcDateTime::from(EbmlDate(681899235000000000)), expected_datetime)
+        assert_eq!(
+            UtcDateTime::from(EbmlDate(681899235000000000)),
+            expected_datetime
+        )
     }
 
     #[cfg(feature = "jiff")]
     #[test]
     fn test_date_jiff() {
         use jiff::{civil::date, tz::TimeZone, Zoned};
-        let expected_datetime = date(2022, 8, 11).at(8, 27, 15, 0).to_zoned(TimeZone::UTC).unwrap();
+        let expected_datetime = date(2022, 8, 11)
+            .at(8, 27, 15, 0)
+            .to_zoned(TimeZone::UTC)
+            .unwrap();
 
         assert_eq!(Zoned::from(EbmlDate(681899235000000000)), expected_datetime)
     }
