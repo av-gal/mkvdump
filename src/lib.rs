@@ -28,7 +28,7 @@ pub use error::Error;
 pub type Result<T> = std::result::Result<T, Error>;
 type IResult<T, O> = Result<(T, O)>;
 
-pub(crate) fn parse_id(input: &[u8]) -> IResult<&[u8], Id> {
+pub(crate) fn parse_id(input: &[u8]) -> IResult<Id, &[u8]> {
     let (first_byte, _) = input.split_first().ok_or(Error::NeedData)?;
     // SAFETY: A byte will never have more than eight leading zeroes, which will always fit into usize
     let num_bytes: usize = unsafe {
@@ -48,7 +48,7 @@ pub(crate) fn parse_id(input: &[u8]) -> IResult<&[u8], Id> {
     value_buffer[(4 - varint_bytes.len())..].copy_from_slice(varint_bytes);
     let id = u32::from_be_bytes(value_buffer);
 
-    Ok((input, Id::new(id)))
+    Ok((Id::new(id), input))
 }
 
 /// Represents an [EBML Header](https://github.com/ietf-wg-cellar/ebml-specification/blob/master/specification.markdown#ebml-header)
@@ -104,7 +104,7 @@ impl Header {
     }
 }
 
-fn parse_varint(first_input: &[u8]) -> IResult<&[u8], Option<u64>> {
+fn parse_varint(first_input: &[u8]) -> IResult<Option<u64>, &[u8]> {
     let (first_byte, _) = first_input.split_first().ok_or(Error::NeedData)?;
 
     let vint_prefix_size = first_byte.leading_zeros() as usize + 1;
@@ -135,18 +135,14 @@ fn parse_varint(first_input: &[u8]) -> IResult<&[u8], Option<u64>> {
     // is bigger than u32::MAX.
     // let result = (value != bitmask).then(|| value.try_into()).transpose()?;
 
-    Ok((input, if value == bitmask {
-        None
-    } else {
-        Some(value)
-    }))
+    Ok((Some(value).filter(|v| *v != bitmask), input))
 }
 
 /// Parse element header
-pub fn parse_header(input: &[u8]) -> IResult<&[u8], Header> {
+pub fn parse_header(input: &[u8]) -> IResult<Header, &[u8]> {
     let initial_len = input.len();
-    let (input, id) = parse_id(input)?;
-    let (input, body_size) = parse_varint(input)?;
+    let (id, input) = parse_id(input)?;
+    let (body_size, input) = parse_varint(input)?;
 
     // Only Segment and Cluster have unknownsizeallowed="1" in ebml_matroska.xml.
     // Also mentioned in https://www.w3.org/TR/mse-byte-stream-format-webm/
@@ -161,7 +157,7 @@ pub fn parse_header(input: &[u8]) -> IResult<&[u8], Header> {
         None => Header::with_unknown_size(id, header_size),
     };
 
-    Ok((input, header))
+    Ok((header, input))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -217,33 +213,33 @@ pub enum Binary {
     Corrupted,
 }
 
-fn parse_binary<'a>(header: &Header, input: &'a [u8]) -> IResult<&'a [u8], Binary> {
+fn parse_binary<'a>(header: &Header, input: &'a [u8]) -> IResult<Binary, &'a [u8]> {
     let body_size = header.body_size.ok_or(Error::ForbiddenUnknownSize)?;
-    let (input, binary) = peek_binary(header, input)?;
+    let (binary, input) = peek_binary(header, input)?;
     // Actually consume the bytes from the body
     let (_, input) = input.split_at_checked(body_size.try_into().expect("value of u64 > usize!")).ok_or(Error::NeedData)?;
-    Ok((input, binary))
+    Ok((binary, input))
 }
 
 /// Peek into Binary body without advancing the buffer.
 ///
 /// It may be useful to parse just the first bytes of the binary body
 /// without requiring the whole binary to be loaded into memory.
-pub fn peek_binary<'a>(header: &Header, input: &'a [u8]) -> IResult<&'a [u8], Binary> {
+pub fn peek_binary<'a>(header: &Header, input: &'a [u8]) -> IResult<Binary, &'a [u8]> {
     let body_size = header.body_size.ok_or(Error::ForbiddenUnknownSize)?;
 
     let binary = match header.id {
-        Id::SeekId => Binary::SeekId(parse_id(input)?.1),
-        Id::SimpleBlock => Binary::SimpleBlock(parse_simple_block(input)?.1),
-        Id::Block => Binary::Block(parse_block(input)?.1),
+        Id::SeekId => Binary::SeekId(parse_id(input)?.0),
+        Id::SimpleBlock => Binary::SimpleBlock(parse_simple_block(input)?.0),
+        Id::Block => Binary::Block(parse_block(input)?.0),
         Id::Void => Binary::Void,
-        _ => Binary::Standard(peek_standard_binary(input, body_size.try_into().expect("value in u64 > usize::MAX on this system!"))?.1),
+        _ => Binary::Standard(peek_standard_binary(input, body_size.try_into().expect("value in u64 > usize::MAX on this system!"))?),
     };
 
-    Ok((input, binary))
+    Ok((binary, input))
 }
 
-fn peek_standard_binary(input: &[u8], size: usize) -> IResult<&[u8], String> {
+fn peek_standard_binary(input: &[u8], size: usize) -> Result<String> {
     const MAX_LENGTH: usize = 64;
     if size <= MAX_LENGTH {
         let (bytes, _) = input.split_at_checked(size).ok_or(Error::NeedData)?;
@@ -253,9 +249,9 @@ fn peek_standard_binary(input: &[u8], size: usize) -> IResult<&[u8], String> {
             .fold("".to_owned(), |acc, s| acc + &s + " ")
             .trim_end()
             .to_owned();
-        Ok((input, format!("[{}]", string_values)))
+        Ok(format!("[{}]", string_values))
     } else {
-        Ok((input, format!("{} bytes", size)))
+        Ok(format!("{} bytes", size))
     }
 }
 
@@ -365,7 +361,7 @@ const SYNC_ELEMENT_IDS: &[Id] = &[
 ///
 /// This parser either stops once a valid sync id or consumes the whole buffer.
 /// It returns NeedData if the input is an empty slice.
-pub fn parse_corrupt(input: &[u8]) -> IResult<&[u8], Element> {
+pub fn parse_corrupt(input: &[u8]) -> IResult<Element, &[u8]> {
     const SYNC_ID_LEN: usize = 4;
 
     if input.is_empty() {
@@ -381,71 +377,71 @@ pub fn parse_corrupt(input: &[u8]) -> IResult<&[u8], Element> {
                 // the sync element header itself is corrupt (e.g. invalid varint), then
                 // the consuming side might step into an infinite loop.
                 return Ok((
-                    &input[offset..],
                     Element {
                         header: Header::new(Id::corrupted(), 0, offset as u64),
                         body: Body::Binary(Binary::Corrupted),
                     },
+                    &input[offset..],
                 ));
             }
         }
     }
     Ok((
-        &[],
         Element {
             header: Header::new(Id::corrupted(), 0, input.len() as u64),
             body: Body::Binary(Binary::Corrupted),
         },
+        &[],
     ))
 }
 
 /// Parse an element
-pub fn parse_element(original_input: &[u8]) -> IResult<&[u8], Element> {
-    let (input, header) = parse_header(original_input)?;
-    let (input, body) = parse_body(&header, input)?;
+pub fn parse_element(original_input: &[u8]) -> IResult<Element, &[u8]> {
+    let (header, input) = parse_header(original_input)?;
+    let (body, input) = parse_body(&header, input)?;
 
     let element = Element { header, body };
-    Ok((input, element))
+    Ok((element, input))
 }
 
 /// Parse element body
-pub fn parse_body<'a>(header: &Header, input: &'a [u8]) -> IResult<&'a [u8], Body> {
+pub fn parse_body<'a>(header: &Header, input: &'a [u8]) -> IResult<Body, &'a [u8]> {
     let element_type = header.id.get_type();
     let (input, body) = match element_type {
         Type::Master => (input, Body::Master),
         Type::Unsigned => {
-            let (input, value) = parse_int(header, input)?;
+            let (value, input) = parse_int(header, input)?;
             (input, Body::Unsigned(Unsigned::new(&header.id, value)))
         }
         Type::Signed => {
-            let (input, value) = parse_int(header, input)?;
+            let (value, input) = parse_int(header, input)?;
             (input, Body::Signed(value))
         }
         Type::Float => {
-            let (input, value) = parse_float(header, input)?;
+            let (value, input) = parse_float(header, input)?;
             (input, Body::Float(value))
         }
         Type::String => {
-            let (input, value) = parse_string(header, input)?;
+            let (value, input) = parse_string(header, input)?;
             (input, Body::String(value))
         }
         Type::Utf8 => {
-            let (input, value) = parse_string(header, input)?;
+            let (value, input) = parse_string(header, input)?;
             (input, Body::Utf8(value))
         }
         Type::Date => {
-            let (input, value) = parse_date(header, input)?;
+            let (value, input) = parse_date(header, input)?;
             (input, Body::Date(value))
         }
         Type::Binary => {
-            let (input, value) = parse_binary(header, input)?;
+            let (value, input) = parse_binary(header, input)?;
             (input, Body::Binary(value))
         }
     };
-    Ok((input, body))
+    Ok((body, input))
 }
 
-fn parse_string<'a>(header: &Header, input: &'a [u8]) -> IResult<&'a [u8], String> {
+fn parse_string<'a>(header: &Header, input: &'a [u8]) -> IResult<String, &'a [u8]> {
     let body_size = header.body_size.ok_or(Error::ForbiddenUnknownSize)?;
     let (string_bytes, input) = input.split_at_checked(body_size.try_into().expect("value of u64 > usize::MAX on this system!")).ok_or(Error::NeedData)?;
     let value = String::from_utf8(string_bytes.to_vec())?;
@@ -453,12 +449,12 @@ fn parse_string<'a>(header: &Header, input: &'a [u8]) -> IResult<&'a [u8], Strin
     // Remove trimming null characters
     let value = value.trim_end_matches('\0').to_string();
 
-    Ok((input, value))
+    Ok((value, input))
 }
 
-fn parse_date<'a>(header: &Header, input: &'a [u8]) -> IResult<&'a [u8], EbmlDate> {
-    let (input, timestamp_nanos_to_2001) = parse_int::<i64>(header, input)?;
-    Ok((input, EbmlDate(timestamp_nanos_to_2001)))
+fn parse_date<'a>(header: &Header, input: &'a [u8]) -> IResult<EbmlDate, &'a [u8]> {
+    let (timestamp_nanos_to_2001, input) = parse_int::<i64>(header, input)?;
+    Ok((EbmlDate(timestamp_nanos_to_2001), input))
 }
 
 trait Integer64FromBigEndianBytes {
@@ -480,7 +476,7 @@ impl Integer64FromBigEndianBytes for i64 {
 fn parse_int<'a, T: Integer64FromBigEndianBytes>(
     header: &Header,
     input: &'a [u8],
-) -> IResult<&'a [u8], T> {
+) -> IResult<T, &'a [u8]> {
     let body_size = header.body_size.ok_or(Error::ForbiddenUnknownSize)?;
     if body_size > 8 {
         return Err(Error::ForbiddenIntegerSize);
@@ -492,31 +488,31 @@ fn parse_int<'a, T: Integer64FromBigEndianBytes>(
     value_buffer[(8 - int_bytes.len())..].copy_from_slice(int_bytes);
     let value = T::from_be_bytes(value_buffer);
 
-    Ok((input, value))
+    Ok((value, input))
 }
 
-fn parse_float<'a>(header: &Header, input: &'a [u8]) -> IResult<&'a [u8], f64> {
+fn parse_float<'a>(header: &Header, input: &'a [u8]) -> IResult<f64, &'a [u8]> {
     let body_size = header.body_size.ok_or(Error::ForbiddenUnknownSize)?;
 
     if body_size == 4 {
         let (float_bytes, input) = input.split_at_checked(body_size.try_into().expect("value of u64 > usize::MAX on this system!")).ok_or(Error::NeedData)?;
         let value = f32::from_be_bytes(float_bytes.try_into().unwrap()) as f64;
-        Ok((input, value))
+        Ok((value, input))
     } else if body_size == 8 {
         let (float_bytes, input) = input.split_at_checked(body_size.try_into().expect("value of u64 > usize::MAX on this system!")).ok_or(Error::NeedData)?;
         let value = f64::from_be_bytes(float_bytes.try_into().unwrap());
-        Ok((input, value))
+        Ok((value, input))
     } else if body_size == 0 {
-        Ok((input, 0f64))
+        Ok((0f64, input))
     } else {
         Err(Error::ForbiddenFloatSize)
     }
 }
 
-fn parse_i16(input: &[u8]) -> IResult<&[u8], i16> {
+fn parse_i16(input: &[u8]) -> IResult<i16, &[u8]> {
     let (bytes, input) = input.split_at_checked(2).ok_or(Error::NeedData)?;
     let value = i16::from_be_bytes(bytes.try_into().unwrap());
-    Ok((input, value))
+    Ok((value, input))
 }
 
 fn is_invisible(flags: u8) -> bool {
@@ -532,10 +528,10 @@ fn get_lacing(flags: u8) -> Option<Lacing> {
     }
 }
 
-fn parse_block(input: &[u8]) -> IResult<&[u8], Block> {
-    let (input, track_number) = parse_varint(input)?;
+fn parse_block(input: &[u8]) -> IResult<Block, &[u8]> {
+    let (track_number, input) = parse_varint(input)?;
     let track_number = track_number.ok_or(Error::MissingTrackNumber)?;
-    let (input, timestamp) = parse_i16(input)?;
+    let (timestamp, input) = parse_i16(input)?;
     let (&flags, input) = input.split_first().ok_or(Error::NeedData)?;
 
     let invisible = is_invisible(flags);
@@ -548,7 +544,6 @@ fn parse_block(input: &[u8]) -> IResult<&[u8], Block> {
     };
 
     Ok((
-        input,
         Block {
             track_number,
             timestamp,
@@ -556,28 +551,28 @@ fn parse_block(input: &[u8]) -> IResult<&[u8], Block> {
             lacing,
             num_frames,
         },
+        input,
     ))
 }
 
-fn parse_simple_block(input: &[u8]) -> IResult<&[u8], SimpleBlock> {
-    let (input, track_number) = parse_varint(input)?;
+fn parse_simple_block(input: &[u8]) -> IResult<SimpleBlock, &[u8]> {
+    let (track_number, input) = parse_varint(input)?;
     let track_number = track_number.ok_or(Error::MissingTrackNumber)?;
-    let (input, timestamp) = parse_i16(input)?;
+    let (timestamp, input) = parse_i16(input)?;
     let (&flags, input) = input.split_first().ok_or(Error::NeedData)?;
 
     let keyframe = (flags & (1 << 7)) != 0;
     let invisible = is_invisible(flags);
     let lacing = get_lacing(flags);
     let discardable = (flags & 0b1) != 0;
-    let (input, num_frames) = if lacing.is_some() {
+    let (num_frames, input) = if lacing.is_some() {
         let (num_frames, input) = input.split_first().ok_or(Error::NeedData)?;
-        (input, Some(num_frames + 1))
+        (Some(num_frames + 1), input)
     } else {
-        (input, None)
+        (None, input)
     };
 
     Ok((
-        input,
         SimpleBlock {
             track_number,
             timestamp,
@@ -587,11 +582,12 @@ fn parse_simple_block(input: &[u8]) -> IResult<&[u8], SimpleBlock> {
             discardable,
             num_frames,
         },
+        input,
     ))
 }
 
 /// Helper to add resiliency to corrupt inputs
-pub fn parse_element_or_corrupted(input: &[u8]) -> IResult<&[u8], Element> {
+pub fn parse_element_or_corrupted(input: &[u8]) -> IResult<Element, &[u8]> {
     parse_element(input).or_else(|_| parse_corrupt(input))
 }
 
@@ -606,9 +602,9 @@ mod tests {
 
     #[test]
     fn test_parse_id() {
-        assert_eq!(parse_id(&[0x1A, 0x45, 0xDF, 0xA3]), Ok((EMPTY, Id::Ebml)));
-        assert_eq!(parse_id(&[0x42, 0x86]), Ok((EMPTY, Id::EbmlVersion)));
-        assert_eq!(parse_id(&[0x23, 0x83, 0xE3]), Ok((EMPTY, Id::FrameRate)));
+        assert_eq!(parse_id(&[0x1A, 0x45, 0xDF, 0xA3]), Ok((Id::Ebml, EMPTY)));
+        assert_eq!(parse_id(&[0x42, 0x86]), Ok((Id::EbmlVersion, EMPTY)));
+        assert_eq!(parse_id(&[0x23, 0x83, 0xE3]), Ok((Id::FrameRate, EMPTY)));
 
         // 1 byte missing from FrameRate (3-bytes long)
         assert_eq!(parse_id(&[0x23, 0x83]), Err(Error::NeedData));
@@ -618,22 +614,22 @@ mod tests {
         assert_eq!(parse_id(FAILURE_INPUT), Err(Error::InvalidId));
 
         // Unknown ID
-        let (remaining, id) = parse_id(&[0x19, 0xAB, 0xCD, 0xEF]).unwrap();
-        assert_eq!((remaining, &id), (EMPTY, &Id::Unknown(0x19ABCDEF)));
+        let (id, remaining) = parse_id(&[0x19, 0xAB, 0xCD, 0xEF]).unwrap();
+        assert_eq!((&id, remaining), (&Id::Unknown(0x19ABCDEF), EMPTY));
         assert_eq!(serde_yaml::to_string(&id).unwrap().trim(), "'0x19ABCDEF'");
         assert_eq!(id.get_value().unwrap(), 0x19ABCDEF);
     }
 
     #[test]
     fn test_parse_varint() {
-        assert_eq!(parse_varint(&[0x9F]), Ok((EMPTY, Some(31))));
-        assert_eq!(parse_varint(&[0x81]), Ok((EMPTY, Some(1))));
-        assert_eq!(parse_varint(&[0x53, 0xAC]), Ok((EMPTY, Some(5036))));
+        assert_eq!(parse_varint(&[0x9F]), Ok((Some(31), EMPTY)));
+        assert_eq!(parse_varint(&[0x81]), Ok((Some(1), EMPTY)));
+        assert_eq!(parse_varint(&[0x53, 0xAC]), Ok((Some(5036), EMPTY)));
 
         const INVALID_VARINT: &[u8] = &[0x00, 0xAC];
         assert_eq!(parse_varint(INVALID_VARINT), Err(Error::InvalidVarint));
 
-        assert_eq!(parse_varint(UNKNOWN_VARINT), Ok((EMPTY, None)));
+        assert_eq!(parse_varint(UNKNOWN_VARINT), Ok((None, EMPTY)));
     }
 
     #[test]
@@ -641,7 +637,7 @@ mod tests {
         const INPUT: &[u8] = &[0x1A, 0x45, 0xDF, 0xA3, 0x9F];
         assert_eq!(
             parse_header(INPUT),
-            Ok((EMPTY, Header::new(Id::Ebml, 5, 31)))
+            Ok((Header::new(Id::Ebml, 5, 31), EMPTY))
         );
     }
 
@@ -649,7 +645,7 @@ mod tests {
     fn test_parse_string() {
         assert_eq!(
             parse_string(&Header::new(Id::DocType, 3, 4), &[0x77, 0x65, 0x62, 0x6D]),
-            Ok((EMPTY, "webm".to_string()))
+            Ok(("webm".to_string(), EMPTY))
         );
 
         assert_eq!(
@@ -657,7 +653,7 @@ mod tests {
                 &Header::new(Id::DocType, 3, 6),
                 &[0x77, 0x65, 0x62, 0x6D, 0x00, 0x00]
             ),
-            Ok((EMPTY, "webm".to_string()))
+            Ok(("webm".to_string(), EMPTY))
         );
 
         assert_eq!(
@@ -678,7 +674,7 @@ mod tests {
 
         // Now it finds a Segment.
         const SEGMENT_ID: &[u8] = &[0x18, 0x53, 0x80, 0x67];
-        let (remaining, element) =
+        let (element, remaining) =
             parse_element_or_corrupted(&[0x42, 0x87, 0x90, 0x01, 0x18, 0x53, 0x80, 0x67]).unwrap();
         assert_eq!(
             (remaining, &element),
@@ -724,7 +720,7 @@ mod tests {
     fn test_parse_int() {
         assert_eq!(
             parse_int(&Header::new(Id::EbmlVersion, 3, 1), &[0x01]),
-            Ok((EMPTY, 1u64))
+            Ok((1u64, EMPTY))
         );
         assert_eq!(
             parse_int::<u64>(&Header::with_unknown_size(Id::EbmlVersion, 3), EMPTY),
@@ -740,18 +736,18 @@ mod tests {
     fn test_parse_float() {
         assert_eq!(
             parse_float(&Header::new(Id::Duration, 3, 4), &[0x45, 0x7A, 0x30, 0x00]),
-            Ok((EMPTY, 4003.))
+            Ok((4003., EMPTY))
         );
         assert_eq!(
             parse_float(
                 &Header::new(Id::Duration, 3, 8),
                 &[0x40, 0xAF, 0x46, 0x00, 0x00, 0x00, 0x00, 0x00]
             ),
-            Ok((EMPTY, 4003.))
+            Ok((4003., EMPTY))
         );
         assert_eq!(
             parse_float(&Header::new(Id::Duration, 3, 0), EMPTY),
-            Ok((EMPTY, 0.))
+            Ok((0., EMPTY))
         );
         assert_eq!(
             parse_float(&Header::new(Id::Duration, 3, 7), EMPTY),
@@ -768,7 +764,7 @@ mod tests {
         const BODY: &[u8] = &[0x15, 0x49, 0xA9, 0x66];
         assert_eq!(
             parse_binary(&Header::new(Id::SeekId, 3, 4), BODY),
-            Ok((EMPTY, Binary::SeekId(Id::Info)))
+            Ok((Binary::SeekId(Id::Info), EMPTY))
         );
         assert_eq!(
             parse_binary(&Header::with_unknown_size(Id::SeekId, 3), EMPTY),
@@ -785,7 +781,7 @@ mod tests {
                 &Header::new(Id::DateUtc, 1, 8),
                 &[0x09, 0x76, 0x97, 0xbd, 0xca, 0xc9, 0x1e, 0x00]
             ),
-            Ok((EMPTY, expected_datetime))
+            Ok((expected_datetime, EMPTY))
         )
     }
 
@@ -833,11 +829,11 @@ mod tests {
         assert_eq!(
             result,
             Ok((
-                &INPUT[5..],
                 Element {
                     header: Header::new(Id::Ebml, 5, 31),
                     body: Body::Master
-                }
+                },
+                &INPUT[5..],
             ))
         );
     }
@@ -848,18 +844,18 @@ mod tests {
         assert_eq!(
             parse_element(INPUT),
             Ok((
-                EMPTY,
                 Element {
                     header: Header::new(Id::TrackType, 2, 1),
                     body: Body::Unsigned(Unsigned::Enumeration(Enumeration::TrackType(
                         TrackType::Video
                     )))
-                }
+                },
+                EMPTY,
             ))
         );
 
         const INPUT_UNKNOWN_ENUMERATION: &[u8] = &[0x83, 0x81, 0xFF];
-        let (remaining, element) = parse_element(INPUT_UNKNOWN_ENUMERATION).unwrap();
+        let (element, remaining) = parse_element(INPUT_UNKNOWN_ENUMERATION).unwrap();
         assert_eq!(
             (remaining, &element),
             (
@@ -881,11 +877,11 @@ mod tests {
         assert_eq!(
             parse_element(&[0x53, 0xAB, 0x84, 0x15, 0x49, 0xA9, 0x66]),
             Ok((
-                EMPTY,
                 Element {
                     header: Header::new(Id::SeekId, 3, 4),
                     body: Body::Binary(Binary::SeekId(Id::Info))
-                }
+                },
+                EMPTY,
             ))
         );
     }
@@ -895,11 +891,11 @@ mod tests {
         assert_eq!(
             parse_element(&[0xBF, 0x84, 0xAF, 0x93, 0x97, 0x18]),
             Ok((
-                EMPTY,
                 Element {
                     header: Header::new(Id::Crc32, 2, 4),
                     body: Body::Binary(Binary::Standard("[af 93 97 18]".into()))
-                }
+                },
+                EMPTY,
             ))
         );
     }
@@ -909,11 +905,11 @@ mod tests {
         assert_eq!(
             parse_element(&[0x63, 0xC0, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
             Ok((
-                EMPTY,
                 Element {
                     header: Header::new(Id::Targets, 10, 0),
                     body: Body::Master
-                }
+                },
+                EMPTY,
             ))
         );
     }
@@ -923,14 +919,14 @@ mod tests {
         assert_eq!(
             parse_block(&[0x81, 0x0F, 0x7A, 0x00]),
             Ok((
-                EMPTY,
                 Block {
                     track_number: 1,
                     timestamp: 3962,
                     invisible: false,
                     lacing: None,
                     num_frames: None
-                }
+                },
+                EMPTY,
             ))
         );
 
@@ -942,7 +938,6 @@ mod tests {
         assert_eq!(
             parse_simple_block(&[0x81, 0x00, 0x53, 0x00]),
             Ok((
-                EMPTY,
                 SimpleBlock {
                     track_number: 1,
                     timestamp: 83,
@@ -951,7 +946,8 @@ mod tests {
                     lacing: None,
                     discardable: false,
                     num_frames: None,
-                }
+                },
+                EMPTY,
             ))
         );
 
@@ -964,10 +960,10 @@ mod tests {
     #[test]
     fn test_peek_standard_binary() -> Result<()> {
         let input = &[1, 2, 3];
-        assert_eq!(peek_standard_binary(input, 3)?.1, "[01 02 03]");
+        assert_eq!(peek_standard_binary(input, 3)?, "[01 02 03]");
 
         let input = &[0; 5];
-        assert_eq!(peek_standard_binary(input, 65)?.1, "65 bytes");
+        assert_eq!(peek_standard_binary(input, 65)?, "65 bytes");
         Ok(())
     }
 
@@ -994,11 +990,11 @@ mod tests {
         assert_eq!(
             parse_corrupt(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
             Ok((
-                EMPTY,
                 Element {
                     header: Header::new(Id::corrupted(), 0, 10),
                     body: Body::Binary(Binary::Corrupted)
-                }
+                },
+                EMPTY,
             ))
         );
     }
