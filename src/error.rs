@@ -29,7 +29,7 @@ pub enum Error {
     ValidElementNotFound,
     /// Missing track number
     #[error("missing track number")]
-    MissingTrackNumber,
+    InvalidTrackNumber,
     /// Overflow
     #[error("overflow")]
     Overflow(#[from] TryFromIntError),

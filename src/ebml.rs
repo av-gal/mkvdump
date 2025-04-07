@@ -1,3 +1,93 @@
+use crate::{Error, IResult};
+
+/// A Variable Size Integer, as defined in the [EBML spec](https://datatracker.ietf.org/doc/html/rfc8794#name-variable-size-integer)
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Serialize)]
+pub struct VarInt {
+    val: u64,
+    len: u8,
+}
+
+impl VarInt {
+    /// Construct a VarInt with the minimum length for its value
+    pub fn new(val: u64) -> Self {
+        Self {
+            val,
+            len: (val.checked_ilog2().unwrap_or(0) as u8 / 7) + 1,
+        }
+    }
+
+    /// Construct a VarInt with the given number of bytes.
+    ///
+    /// Panics if `val` cannot be contained within the given `len`.
+    pub fn new_with_length(val: u64, len: u8) -> Self {
+        // TODO find something more efficient for this
+        assert!(len >= val.checked_ilog2().unwrap_or(0) as u8 / 7 + 1);
+
+        Self { val, len }
+    }
+
+    /// Returns the maximum VarInt with a given length.
+    pub fn max_with_size(len: u8) -> Self {
+        Self {
+            val: 2u64.pow(7 * len as u32) - 1,
+            len,
+        }
+    }
+
+    /// Returns `true` if this `VarInt` is the maximum for its length
+    pub fn is_max(&self) -> bool {
+        *self == Self::max_with_size(self.len)
+    }
+
+    pub fn len(&self) -> u8 {
+        self.len
+    }
+
+    pub fn as_u64(&self) -> u64 {
+        self.val
+    }
+}
+
+pub fn parse_varint(first_input: &[u8]) -> IResult<VarInt, &[u8]> {
+    let (first_byte, _) = first_input.split_first().ok_or(Error::NeedData)?;
+
+    let vint_prefix_size = first_byte.leading_zeros() as usize + 1;
+
+    // Maximum 8 bytes, i.e. first byte can't be 0
+    // TODO: Use EBMLMaxSizeLength instead of hardcoding 8 bytes
+    if vint_prefix_size > 8 {
+        return Err(Error::InvalidVarint);
+    }
+
+    let (varint_bytes, input) = first_input
+        .split_at_checked(vint_prefix_size)
+        .ok_or(Error::NeedData)?;
+    // any efficient way to avoid this copy here?
+    let mut value_buffer = [0u8; 8];
+    value_buffer[(8 - vint_prefix_size)..].copy_from_slice(varint_bytes);
+    let mut value = u64::from_be_bytes(value_buffer);
+
+    // discard varint prefix (zeros + market bit)
+    let num_bits_in_value = 7 * vint_prefix_size;
+    let bitmask = (1 << num_bits_in_value) - 1;
+    value &= bitmask;
+
+    // If all VINT_DATA bits are set to 1, it's an unkown size/value
+    // https://github.com/ietf-wg-cellar/ebml-specification/blob/master/specification.markdown#unknown-data-size
+    //
+    // In 32-bit plaforms, the conversion from u64 to usize will fail if the value
+    // is bigger than u32::MAX.
+    // let result = (value != bitmask).then(|| value.try_into()).transpose()?;
+
+    Ok((
+        VarInt {
+            val: value,
+            len: vint_prefix_size as u8,
+        },
+        input,
+    ))
+}
+
 macro_rules! ebml_elements {
     ($($(#[doc = $doc:literal])* name = $element_name:ident, original_name = $original_name:expr, id = $id:expr, variant = $variant:ident, unknownsizeallowed = $unknownsizeallowed:literal;)+) => {
         use serde::{Serialize, Serializer};
@@ -143,3 +233,4 @@ macro_rules! ebml_enumerations {
 
 pub(crate) use ebml_elements;
 pub(crate) use ebml_enumerations;
+use serde::Serialize;
