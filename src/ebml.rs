@@ -166,6 +166,18 @@ macro_rules! ebml_elements {
                     Id::Corrupted => None
                 }
             }
+
+            /// Returns the length of this ID, in bytes
+            ///
+            /// Returns zero if this ID is `Id::Corrupted`
+            pub fn size(&self) -> u8 {
+                if *self == Id::Corrupted {
+                    0
+                } else {
+                    (self.get_value().unwrap() + 1).ilog2() as u8
+                }
+            }
+        }
         }
 
         impl Serialize for Id {

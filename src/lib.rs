@@ -54,8 +54,6 @@ pub(crate) fn parse_id(input: &[u8]) -> IResult<Id, &[u8]> {
 pub struct Header {
     /// The Element ID
     pub id: Id,
-    /// Size of the header itself
-    pub header_size: usize,
     /// Size of the Element Body
     #[serde(serialize_with = "serialize_size")]
     body_size: VarInt,
@@ -74,14 +72,25 @@ fn serialize_size<S: Serializer>(size: &VarInt, s: S) -> std::result::Result<S::
 
 impl Header {
     /// Create a new Header
-    pub fn new(id: Id, header_size: usize, body_size: VarInt) -> Self {
+    pub fn new(id: Id, body_size: VarInt) -> Self {
         Self {
             id,
-            header_size,
-            body_size: body_size,
+            body_size,
             position: None,
         }
     }
+
+    /// Returns the length of the header itself in bytes.
+    ///
+    /// The length of the header is zero if the element is corrupted.
+    pub fn size(&self) -> u8 {
+        if self.id == Id::Corrupted {
+            0
+        } else {
+            self.id.size() + self.body_size.len()
+        }
+    }
+    
 
     // fn with_unknown_size(id: Id, header_size: usize) -> Self {
     //     Self {
@@ -95,7 +104,6 @@ impl Header {
 
 /// Parse element header
 pub fn parse_header(input: &[u8]) -> IResult<Header, &[u8]> {
-    let initial_len = input.len();
     let (id, input) = parse_id(input)?;
     let (body_size, input) = parse_varint(input)?;
 
@@ -107,9 +115,7 @@ pub fn parse_header(input: &[u8]) -> IResult<Header, &[u8]> {
         return Err(Error::ForbiddenUnknownSize);
     }
 
-    let header_size = initial_len - input.len();
-
-    Ok((Header::new(id, header_size, body_size), input))
+    Ok((Header::new(id, body_size), input))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -311,11 +317,11 @@ pub struct Element {
 
 impl Element {
     /// Returns the length of this element header and body, or none if the element body size is undefined.
-    pub fn len(&self) -> Option<u64> {
+    pub fn size(&self) -> Option<u64> {
         if self.header.body_size.is_max() {
             None
         } else {
-            Some(self.header.body_size.as_u64() + self.header.header_size as u64)
+            Some(self.header.body_size.as_u64() + self.header.size() as u64)
         }
     }
 }
@@ -360,7 +366,7 @@ pub fn parse_corrupt(input: &[u8]) -> IResult<Element, &[u8]> {
                 // the consuming side might step into an infinite loop.
                 return Ok((
                     Element {
-                        header: Header::new(Id::corrupted(), 0, VarInt::new(offset as u64)),
+                        header: Header::new(Id::corrupted(), VarInt::new(offset as u64)),
                         body: Body::Binary(Binary::Corrupted),
                     },
                     &input[offset..],
@@ -370,7 +376,7 @@ pub fn parse_corrupt(input: &[u8]) -> IResult<Element, &[u8]> {
     }
     Ok((
         Element {
-            header: Header::new(Id::corrupted(), 0, VarInt::new(input.len() as u64)),
+            header: Header::new(Id::corrupted(), VarInt::new(input.len() as u64)),
             body: Body::Binary(Binary::Corrupted),
         },
         &[],
@@ -652,7 +658,7 @@ mod tests {
         const INPUT: &[u8] = &[0x1A, 0x45, 0xDF, 0xA3, 0x9F];
         assert_eq!(
             parse_header(INPUT),
-            Ok((Header::new(Id::Ebml, 5, VarInt::new(31)), EMPTY))
+            Ok((Header::new(Id::Ebml, VarInt::new(31)), EMPTY))
         );
     }
 
@@ -660,7 +666,7 @@ mod tests {
     fn test_parse_string() {
         assert_eq!(
             parse_string(
-                &Header::new(Id::DocType, 3, VarInt::new(4)),
+                &Header::new(Id::DocType, VarInt::new(4)),
                 &[0x77, 0x65, 0x62, 0x6D]
             ),
             Ok(("webm".to_string(), EMPTY))
@@ -668,7 +674,7 @@ mod tests {
 
         assert_eq!(
             parse_string(
-                &Header::new(Id::DocType, 3, VarInt::new(6)),
+                &Header::new(Id::DocType, VarInt::new(6)),
                 &[0x77, 0x65, 0x62, 0x6D, 0x00, 0x00]
             ),
             Ok(("webm".to_string(), EMPTY))
@@ -700,7 +706,7 @@ mod tests {
             (
                 SEGMENT_ID,
                 &Element {
-                    header: Header::new(Id::corrupted(), 0, VarInt::new(4)),
+                    header: Header::new(Id::corrupted(), VarInt::new(4)),
                     body: Body::Binary(Binary::Corrupted),
                 },
             )
@@ -738,7 +744,7 @@ mod tests {
     #[test]
     fn test_parse_int() {
         assert_eq!(
-            parse_int(&Header::new(Id::EbmlVersion, 3, VarInt::new(1)), &[0x01]),
+            parse_int(&Header::new(Id::EbmlVersion, VarInt::new(1)), &[0x01]),
             Ok((1u64, EMPTY))
         );
         // TODO forbid these headers by construction
@@ -756,24 +762,24 @@ mod tests {
     fn test_parse_float() {
         assert_eq!(
             parse_float(
-                &Header::new(Id::Duration, 3, VarInt::new(4)),
+                &Header::new(Id::Duration, VarInt::new(4)),
                 &[0x45, 0x7A, 0x30, 0x00]
             ),
             Ok((4003., EMPTY))
         );
         assert_eq!(
             parse_float(
-                &Header::new(Id::Duration, 3, VarInt::new(8)),
+                &Header::new(Id::Duration, VarInt::new(8)),
                 &[0x40, 0xAF, 0x46, 0x00, 0x00, 0x00, 0x00, 0x00]
             ),
             Ok((4003., EMPTY))
         );
         assert_eq!(
-            parse_float(&Header::new(Id::Duration, 3, VarInt::new(0)), EMPTY),
+            parse_float(&Header::new(Id::Duration, VarInt::new(0)), EMPTY),
             Ok((0., EMPTY))
         );
         assert_eq!(
-            parse_float(&Header::new(Id::Duration, 3, VarInt::new(7)), EMPTY),
+            parse_float(&Header::new(Id::Duration, VarInt::new(7)), EMPTY),
             Err(Error::ForbiddenFloatSize)
         );
         // TODO forbid these headers by construction
@@ -787,7 +793,7 @@ mod tests {
     fn test_parse_binary() {
         const BODY: &[u8] = &[0x15, 0x49, 0xA9, 0x66];
         assert_eq!(
-            parse_binary(&Header::new(Id::SeekId, 3, VarInt::new(4)), BODY),
+            parse_binary(&Header::new(Id::SeekId, VarInt::new(4)), BODY),
             Ok((Binary::SeekId(Id::Info), EMPTY))
         );
         // TODO forbid these headers by construction
@@ -803,7 +809,7 @@ mod tests {
 
         assert_eq!(
             parse_date(
-                &Header::new(Id::DateUtc, 1, VarInt::new(8)),
+                &Header::new(Id::DateUtc, VarInt::new(8)),
                 &[0x09, 0x76, 0x97, 0xbd, 0xca, 0xc9, 0x1e, 0x00]
             ),
             Ok((expected_datetime, EMPTY))
@@ -867,7 +873,7 @@ mod tests {
             result,
             Ok((
                 Element {
-                    header: Header::new(Id::Ebml, 5, VarInt::new(31)),
+                    header: Header::new(Id::Ebml, VarInt::new(31)),
                     body: Body::Master
                 },
                 &INPUT[5..],
@@ -882,7 +888,7 @@ mod tests {
             parse_element(INPUT),
             Ok((
                 Element {
-                    header: Header::new(Id::TrackType, 2, VarInt::new(1)),
+                    header: Header::new(Id::TrackType, VarInt::new(1)),
                     body: Body::Unsigned(Unsigned::Enumeration(Enumeration::TrackType(
                         TrackType::Video
                     )))
@@ -898,7 +904,7 @@ mod tests {
             (
                 EMPTY,
                 &Element {
-                    header: Header::new(Id::TrackType, 2, VarInt::new(1)),
+                    header: Header::new(Id::TrackType, VarInt::new(1)),
                     body: Body::Unsigned(Unsigned::Standard(255))
                 }
             )
@@ -915,7 +921,7 @@ mod tests {
             parse_element(&[0x53, 0xAB, 0x84, 0x15, 0x49, 0xA9, 0x66]),
             Ok((
                 Element {
-                    header: Header::new(Id::SeekId, 3, VarInt::new(4)),
+                    header: Header::new(Id::SeekId, VarInt::new(4)),
                     body: Body::Binary(Binary::SeekId(Id::Info))
                 },
                 EMPTY,
@@ -929,7 +935,7 @@ mod tests {
             parse_element(&[0xBF, 0x84, 0xAF, 0x93, 0x97, 0x18]),
             Ok((
                 Element {
-                    header: Header::new(Id::Crc32, 2, VarInt::new(4)),
+                    header: Header::new(Id::Crc32, VarInt::new(4)),
                     body: Body::Binary(Binary::Standard("[af 93 97 18]".into()))
                 },
                 EMPTY,
@@ -943,7 +949,7 @@ mod tests {
             parse_element(&[0x63, 0xC0, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
             Ok((
                 Element {
-                    header: Header::new(Id::Targets, 10, VarInt::new_with_length(0, 8)),
+                    header: Header::new(Id::Targets, VarInt::new_with_length(0, 8)),
                     body: Body::Master
                 },
                 EMPTY,
@@ -1028,7 +1034,7 @@ mod tests {
             parse_corrupt(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
             Ok((
                 Element {
-                    header: Header::new(Id::corrupted(), 0, VarInt::new(10)),
+                    header: Header::new(Id::corrupted(), VarInt::new(10)),
                     body: Body::Binary(Binary::Corrupted)
                 },
                 EMPTY,

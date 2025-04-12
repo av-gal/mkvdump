@@ -56,10 +56,10 @@ pub fn build_element_trees(elements: &[Element]) -> Vec<ElementTree> {
                             // Master elements' body size should not count in the recursion
                             // as the children would duplicate the size count, so
                             // we only consider the header size on the calculation.
-                            next_child.header.header_size as u64
+                            next_child.header.size() as u64
                         } else {
                             next_child
-                                .len()
+                                .size()
                                 .expect("Only Master elements can have unknown size")
                         };
                         children.push(next_child.clone());
@@ -92,68 +92,68 @@ mod tests {
     fn test_build_element_trees() {
         let elements = [
             Element {
-                header: Header::new(Id::Ebml, 5, VarInt::new(31)),
+                header: Header::new(Id::Ebml, VarInt::new(31)),
                 body: Body::Master,
             },
             Element {
-                header: Header::new(Id::EbmlVersion, 3, VarInt::new(1)),
+                header: Header::new(Id::EbmlVersion, VarInt::new(1)),
                 body: Body::Unsigned(Unsigned::Standard(1)),
             },
             Element {
-                header: Header::new(Id::EbmlReadVersion, 3, VarInt::new(1)),
+                header: Header::new(Id::EbmlReadVersion, VarInt::new(1)),
                 body: Body::Unsigned(Unsigned::Standard(1)),
             },
             Element {
-                header: Header::new(Id::EbmlMaxIdLength, 3, VarInt::new(1)),
+                header: Header::new(Id::EbmlMaxIdLength, VarInt::new(1)),
                 body: Body::Unsigned(Unsigned::Standard(4)),
             },
             Element {
-                header: Header::new(Id::EbmlMaxSizeLength, 3, VarInt::new(1)),
+                header: Header::new(Id::EbmlMaxSizeLength, VarInt::new(1)),
                 body: Body::Unsigned(Unsigned::Standard(8)),
             },
             Element {
-                header: Header::new(Id::DocType, 3, VarInt::new(4)),
+                header: Header::new(Id::DocType, VarInt::new(4)),
                 body: Body::String("webm".to_string()),
             },
             Element {
-                header: Header::new(Id::DocTypeVersion, 3, VarInt::new(1)),
+                header: Header::new(Id::DocTypeVersion, VarInt::new(1)),
                 body: Body::Unsigned(Unsigned::Standard(4)),
             },
             Element {
-                header: Header::new(Id::DocTypeReadVersion, 3, VarInt::new(1)),
+                header: Header::new(Id::DocTypeReadVersion, VarInt::new(1)),
                 body: Body::Unsigned(Unsigned::Standard(2)),
             },
         ];
 
         let expected = vec![ElementTree::Master(MasterElement {
-            header: Header::new(Id::Ebml, 5, VarInt::new(31)),
+            header: Header::new(Id::Ebml, VarInt::new(31)),
             children: vec![
                 ElementTree::Normal(Element {
-                    header: Header::new(Id::EbmlVersion, 3, VarInt::new(1)),
+                    header: Header::new(Id::EbmlVersion, VarInt::new(1)),
                     body: Body::Unsigned(Unsigned::Standard(1)),
                 }),
                 ElementTree::Normal(Element {
-                    header: Header::new(Id::EbmlReadVersion, 3, VarInt::new(1)),
+                    header: Header::new(Id::EbmlReadVersion, VarInt::new(1)),
                     body: Body::Unsigned(Unsigned::Standard(1)),
                 }),
                 ElementTree::Normal(Element {
-                    header: Header::new(Id::EbmlMaxIdLength, 3, VarInt::new(1)),
+                    header: Header::new(Id::EbmlMaxIdLength, VarInt::new(1)),
                     body: Body::Unsigned(Unsigned::Standard(4)),
                 }),
                 ElementTree::Normal(Element {
-                    header: Header::new(Id::EbmlMaxSizeLength, 3, VarInt::new(1)),
+                    header: Header::new(Id::EbmlMaxSizeLength, VarInt::new(1)),
                     body: Body::Unsigned(Unsigned::Standard(8)),
                 }),
                 ElementTree::Normal(Element {
-                    header: Header::new(Id::DocType, 3, VarInt::new(4)),
+                    header: Header::new(Id::DocType, VarInt::new(4)),
                     body: Body::String("webm".to_string()),
                 }),
                 ElementTree::Normal(Element {
-                    header: Header::new(Id::DocTypeVersion, 3, VarInt::new(1)),
+                    header: Header::new(Id::DocTypeVersion, VarInt::new(1)),
                     body: Body::Unsigned(Unsigned::Standard(4)),
                 }),
                 ElementTree::Normal(Element {
-                    header: Header::new(Id::DocTypeReadVersion, 3, VarInt::new(1)),
+                    header: Header::new(Id::DocTypeReadVersion, VarInt::new(1)),
                     body: Body::Unsigned(Unsigned::Standard(2)),
                 }),
             ],
