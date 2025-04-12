@@ -178,6 +178,11 @@ macro_rules! ebml_elements {
                 }
             }
         }
+
+        impl From<Id> for Option<crate::VarInt> {
+            fn from(id: Id) -> Self {
+                id.get_value().map(|v| crate::VarInt::new(v.into()))
+            }
         }
 
         impl Serialize for Id {
