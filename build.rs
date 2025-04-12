@@ -80,7 +80,7 @@ fn get_elements() -> Vec<Element> {
         .into_iter()
         .chain(ebml_matroska_schema.elements.into_iter())
     {
-        if known_elements.get(&element.name).is_none() {
+        if !known_elements.contains(&element.name) {
             known_elements.insert(element.name.clone());
             elements.push(element);
         }

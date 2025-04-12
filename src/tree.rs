@@ -52,7 +52,7 @@ pub fn build_element_trees(elements: &[Element]) -> Vec<ElementTree> {
                             break;
                         }
 
-                        size_remaining -= if let Body::Master = next_child.body {
+                        size_remaining -= if next_child.body == Body::Master {
                             // Master elements' body size should not count in the recursion
                             // as the children would duplicate the size count, so
                             // we only consider the header size on the calculation.

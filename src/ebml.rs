@@ -21,7 +21,7 @@ impl VarInt {
     /// Panics if `val` cannot be contained within the given `len`.
     pub fn new_with_length(val: u64, len: u8) -> Self {
         // TODO find something more efficient for this
-        assert!(len >= val.checked_ilog2().unwrap_or(0) as u8 / 7 + 1);
+        assert!(len > val.checked_ilog2().unwrap_or(0) as u8 / 7);
 
         Self { val, len }
     }
