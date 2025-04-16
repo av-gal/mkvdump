@@ -29,23 +29,52 @@ pub use error::Error;
 pub type Result<T> = std::result::Result<T, Error>;
 type IResult<T, O> = Result<(T, O)>;
 
-pub(crate) fn parse_id(input: &[u8]) -> IResult<Id, &[u8]> {
-    let (first_byte, _) = input.split_first().ok_or(Error::NeedData)?;
-    // SAFETY: A byte will never have more than eight leading zeroes, which will always fit into usize
-    let num_bytes = first_byte.leading_zeros() as usize + 1;
+/// Trait to serialize this object into a canonical representation
+/// 
+/// "Canonical" means both that these bytes should be the object's only possible serialization,
+/// and that there should be no other object that produces these bytes.
+pub trait Generate {
+    /// Attempt to parse this item out of the buffer.
+    ///
+    /// Returns the item and a buffer of the remaining data, or an error.
+    fn generate(&self) -> Result<&[u8]>
+    where
+        Self: std::marker::Sized;
+}
 
-    // IDs can only have up to 4 bytes in Matroska
-    // TODO: Use EBMLMaxIDLength instead of hardcoding 4 bytes
-    if num_bytes > 4 {
-        return Err(Error::InvalidId);
+/// Trait to deserialize an object from bytes.
+///
+/// Part of this trait's contract is that the deserialised object should have a one-to-one
+/// relationship with the underlying bytes: no other sequence of bytes should produce exactly
+/// the same struct.
+pub trait Parse {
+    /// Attempt to parse this item out of the buffer.
+    ///
+    /// Returns the item and a buffer of the remaining data, or an error.
+    fn parse(input: &[u8]) -> IResult<Self, &[u8]>
+    where
+        Self: std::marker::Sized;
+}
+
+impl Parse for Id {
+    fn parse(input: &[u8]) -> IResult<Self, &[u8]> {
+        let (first_byte, _) = input.split_first().ok_or(Error::NeedData)?;
+        // SAFETY: A byte will never have more than eight leading zeroes, which will always fit into usize
+        let num_bytes = first_byte.leading_zeros() as usize + 1;
+
+        // IDs can only have up to 4 bytes in Matroska
+        // TODO: Use EBMLMaxIDLength instead of hardcoding 4 bytes
+        if num_bytes > 4 {
+            return Err(Error::InvalidId);
+        }
+
+        let (varint_bytes, input) = input.split_at_checked(num_bytes).ok_or(Error::NeedData)?;
+        let mut value_buffer = [0u8; 4];
+        value_buffer[(4 - varint_bytes.len())..].copy_from_slice(varint_bytes);
+        let id = u32::from_be_bytes(value_buffer);
+
+        Ok((Id::new(id), input))
     }
-
-    let (varint_bytes, input) = input.split_at_checked(num_bytes).ok_or(Error::NeedData)?;
-    let mut value_buffer = [0u8; 4];
-    value_buffer[(4 - varint_bytes.len())..].copy_from_slice(varint_bytes);
-    let id = u32::from_be_bytes(value_buffer);
-
-    Ok((Id::new(id), input))
 }
 
 /// Represents an [EBML Header](https://github.com/ietf-wg-cellar/ebml-specification/blob/master/specification.markdown#ebml-header)
@@ -90,7 +119,6 @@ impl Header {
             self.id.size() + self.body_size.len()
         }
     }
-    
 
     // fn with_unknown_size(id: Id, header_size: usize) -> Self {
     //     Self {
@@ -102,20 +130,23 @@ impl Header {
     // }
 }
 
-/// Parse element header
-pub fn parse_header(input: &[u8]) -> IResult<Header, &[u8]> {
-    let (id, input) = parse_id(input)?;
-    let (body_size, input) = parse_varint(input)?;
-
-    // Only Segment and Cluster have unknownsizeallowed="1" in ebml_matroska.xml.
-    // Also mentioned in https://www.w3.org/TR/mse-byte-stream-format-webm/
-    if body_size == VarInt::max_with_size(body_size.len())
-        && !id.unknown_size_allowed().unwrap_or_default()
-    {
-        return Err(Error::ForbiddenUnknownSize);
+impl Parse for Header {
+    fn parse(input: &[u8]) -> IResult<Self, &[u8]>
+    where
+        Self: std::marker::Sized {
+            let (id, input) = Id::parse(input)?;
+            let (body_size, input) = parse_varint(input)?;
+        
+            // Only Segment and Cluster have unknownsizeallowed="1" in ebml_matroska.xml.
+            // Also mentioned in https://www.w3.org/TR/mse-byte-stream-format-webm/
+            if body_size == VarInt::max_with_size(body_size.len())
+                && !id.unknown_size_allowed().unwrap_or(true)
+            {
+                return Err(Error::ForbiddenUnknownSize);
+            }
+        
+            Ok((Header::new(id, body_size), input))
     }
-
-    Ok((Header::new(id, body_size), input))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -171,6 +202,25 @@ pub enum Binary {
     Corrupted,
 }
 
+// impl Parse for Binary {
+//     fn parse(input: &[u8]) -> IResult<Self, &[u8]>
+//     where
+//         Self: std::marker::Sized {
+//             let (binary, input) = peek_binary(header, input)?;
+//             // Actually consume the bytes from the body
+//             let (_, input) = input
+//                 .split_at_checked(
+//                     header
+//                         .body_size
+//                         .as_u64()
+//                         .try_into()
+//                         .expect("value of u64 > usize!"),
+//                 )
+//                 .ok_or(Error::NeedData)?;
+//             Ok((binary, input))
+//     }
+// }
+
 fn parse_binary<'a>(header: &Header, input: &'a [u8]) -> IResult<Binary, &'a [u8]> {
     let (binary, input) = peek_binary(header, input)?;
     // Actually consume the bytes from the body
@@ -192,7 +242,7 @@ fn parse_binary<'a>(header: &Header, input: &'a [u8]) -> IResult<Binary, &'a [u8
 /// without requiring the whole binary to be loaded into memory.
 pub fn peek_binary<'a>(header: &Header, input: &'a [u8]) -> IResult<Binary, &'a [u8]> {
     let binary = match header.id {
-        Id::SeekId => Binary::SeekId(parse_id(input)?.0),
+        Id::SeekId => Binary::SeekId(Id::parse(input)?.0),
         Id::SimpleBlock => Binary::SimpleBlock(parse_simple_block(input)?.0),
         Id::Block => Binary::Block(parse_block(input)?.0),
         Id::Void => Binary::Void,
@@ -383,13 +433,15 @@ pub fn parse_corrupt(input: &[u8]) -> IResult<Element, &[u8]> {
     ))
 }
 
-/// Parse an element
-pub fn parse_element(original_input: &[u8]) -> IResult<Element, &[u8]> {
-    let (header, input) = parse_header(original_input)?;
-    let (body, input) = parse_body(&header, input)?;
+impl Parse for Element {
+    fn parse(original_input: &[u8]) -> IResult<Element, &[u8]> {
+        let (header, input) = Header::parse(original_input)?;
 
-    let element = Element { header, body };
-    Ok((element, input))
+        let (body, input) = parse_body(&header, input)?;
+    
+        let element = Element { header, body };
+        Ok((element, input))
+    }
 }
 
 /// Parse element body
@@ -606,7 +658,7 @@ fn parse_simple_block(input: &[u8]) -> IResult<SimpleBlock, &[u8]> {
 
 /// Helper to add resiliency to corrupt inputs
 pub fn parse_element_or_corrupted(input: &[u8]) -> IResult<Element, &[u8]> {
-    parse_element(input).or_else(|_| parse_corrupt(input))
+    Element::parse(input).or_else(|_| parse_corrupt(input))
 }
 
 #[cfg(test)]
@@ -620,19 +672,19 @@ mod tests {
 
     #[test]
     fn test_parse_id() {
-        assert_eq!(parse_id(&[0x1A, 0x45, 0xDF, 0xA3]), Ok((Id::Ebml, EMPTY)));
-        assert_eq!(parse_id(&[0x42, 0x86]), Ok((Id::EbmlVersion, EMPTY)));
-        assert_eq!(parse_id(&[0x23, 0x83, 0xE3]), Ok((Id::FrameRate, EMPTY)));
+        assert_eq!(Id::parse(&[0x1A, 0x45, 0xDF, 0xA3]), Ok((Id::Ebml, EMPTY)));
+        assert_eq!(Id::parse(&[0x42, 0x86]), Ok((Id::EbmlVersion, EMPTY)));
+        assert_eq!(Id::parse(&[0x23, 0x83, 0xE3]), Ok((Id::FrameRate, EMPTY)));
 
         // 1 byte missing from FrameRate (3-bytes long)
-        assert_eq!(parse_id(&[0x23, 0x83]), Err(Error::NeedData));
+        assert_eq!(Id::parse(&[0x23, 0x83]), Err(Error::NeedData));
 
         // Longer than 4 bytes
         const FAILURE_INPUT: &[u8] = &[0x08, 0x45, 0xDF, 0xA3];
-        assert_eq!(parse_id(FAILURE_INPUT), Err(Error::InvalidId));
+        assert_eq!(Id::parse(FAILURE_INPUT), Err(Error::InvalidId));
 
         // Unknown ID
-        let (id, remaining) = parse_id(&[0x19, 0xAB, 0xCD, 0xEF]).unwrap();
+        let (id, remaining) = Id::parse(&[0x19, 0xAB, 0xCD, 0xEF]).unwrap();
         assert_eq!((&id, remaining), (&Id::Unknown(0x19ABCDEF), EMPTY));
         assert_eq!(serde_yaml::to_string(&id).unwrap().trim(), "'0x19ABCDEF'");
         assert_eq!(id.get_value().unwrap(), 0x19ABCDEF);
@@ -657,7 +709,7 @@ mod tests {
     fn test_parse_element_header() {
         const INPUT: &[u8] = &[0x1A, 0x45, 0xDF, 0xA3, 0x9F];
         assert_eq!(
-            parse_header(INPUT),
+            Header::parse(INPUT),
             Ok((Header::new(Id::Ebml, VarInt::new(31)), EMPTY))
         );
     }
@@ -693,7 +745,7 @@ mod tests {
         // It needs to find a valid 4-byte Element ID, but can't
         // so we get an incomplete.
         assert_eq!(
-            parse_element(&[0x42, 0x87, 0x90, 0x01]),
+            Element::parse(&[0x42, 0x87, 0x90, 0x01]),
             Err(Error::ForbiddenIntegerSize)
         );
 
@@ -718,25 +770,25 @@ mod tests {
     fn test_parse_corrupted_unknown_size() {
         // String
         assert_eq!(
-            parse_element(&[0x86, 0xFF, 0x56, 0x5F, 0x54]),
+            Element::parse(&[0x86, 0xFF, 0x56, 0x5F, 0x54]),
             Err(Error::ForbiddenUnknownSize)
         );
 
         // Binary
         assert_eq!(
-            parse_element(&[0x63, 0xA2, 0xFF]),
+            Element::parse(&[0x63, 0xA2, 0xFF]),
             Err(Error::ForbiddenUnknownSize)
         );
 
         // Integer
         assert_eq!(
-            parse_element(&[0x42, 0x87, 0xFF, 0x01]),
+            Element::parse(&[0x42, 0x87, 0xFF, 0x01]),
             Err(Error::ForbiddenUnknownSize)
         );
 
         // Float
         assert_eq!(
-            parse_element(&[0x44, 0x89, 0xFF, 0x01]),
+            Element::parse(&[0x44, 0x89, 0xFF, 0x01]),
             Err(Error::ForbiddenUnknownSize)
         );
     }
@@ -868,7 +920,7 @@ mod tests {
             0x42, 0x87, 0x81, 0x04, 0x42, 0x85, 0x81, 0x02,
         ];
 
-        let result = parse_element(INPUT);
+        let result = Element::parse(INPUT);
         assert_eq!(
             result,
             Ok((
@@ -885,7 +937,7 @@ mod tests {
     fn test_parse_enumeration() {
         const INPUT: &[u8] = &[0x83, 0x81, 0x01];
         assert_eq!(
-            parse_element(INPUT),
+            Element::parse(INPUT),
             Ok((
                 Element {
                     header: Header::new(Id::TrackType, VarInt::new(1)),
@@ -898,7 +950,7 @@ mod tests {
         );
 
         const INPUT_UNKNOWN_ENUMERATION: &[u8] = &[0x83, 0x81, 0xFF];
-        let (element, remaining) = parse_element(INPUT_UNKNOWN_ENUMERATION).unwrap();
+        let (element, remaining) = Element::parse(INPUT_UNKNOWN_ENUMERATION).unwrap();
         assert_eq!(
             (remaining, &element),
             (
@@ -918,7 +970,7 @@ mod tests {
     #[test]
     fn test_parse_seek_id() {
         assert_eq!(
-            parse_element(&[0x53, 0xAB, 0x84, 0x15, 0x49, 0xA9, 0x66]),
+            Element::parse(&[0x53, 0xAB, 0x84, 0x15, 0x49, 0xA9, 0x66]),
             Ok((
                 Element {
                     header: Header::new(Id::SeekId, VarInt::new(4)),
@@ -932,7 +984,7 @@ mod tests {
     #[test]
     fn test_parse_crc32() {
         assert_eq!(
-            parse_element(&[0xBF, 0x84, 0xAF, 0x93, 0x97, 0x18]),
+            Element::parse(&[0xBF, 0x84, 0xAF, 0x93, 0x97, 0x18]),
             Ok((
                 Element {
                     header: Header::new(Id::Crc32, VarInt::new(4)),
@@ -946,7 +998,7 @@ mod tests {
     #[test]
     fn test_parse_empty() {
         assert_eq!(
-            parse_element(&[0x63, 0xC0, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+            Element::parse(&[0x63, 0xC0, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
             Ok((
                 Element {
                     header: Header::new(Id::Targets, VarInt::new_with_length(0, 8)),
