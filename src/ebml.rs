@@ -115,6 +115,7 @@ macro_rules! ebml_elements {
 
         /// Matroska Element ID.
         #[derive(Debug, PartialEq, Eq, Clone)]
+        #[repr(u64)]
         pub enum Id {
             /// Unknown ID containing the value parsed.
             Unknown(u32),
@@ -122,7 +123,7 @@ macro_rules! ebml_elements {
             Corrupted,
             $(
                 $(#[doc = $doc])*
-                $element_name,
+                $element_name = $id,
             )+
         }
 
